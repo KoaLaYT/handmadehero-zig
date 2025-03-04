@@ -10,11 +10,18 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "handmadehero-zig",
+    const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const zigwin32_dep = b.dependency("zigwin32", .{});
+    root_module.addImport("zigwin32", zigwin32_dep.module("win32"));
+
+    const exe = b.addExecutable(.{
+        .name = "handmadehero-zig",
+        .root_module = root_module,
     });
 
     b.installArtifact(exe);
