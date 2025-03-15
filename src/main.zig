@@ -4,9 +4,50 @@ const win32 = struct {
     usingnamespace @import("zigwin32").foundation;
     usingnamespace @import("zigwin32").system.system_services;
     usingnamespace @import("zigwin32").system.memory;
+    usingnamespace @import("zigwin32").system.library_loader;
     usingnamespace @import("zigwin32").ui.windows_and_messaging;
+    usingnamespace @import("zigwin32").ui.input.xbox_controller;
+    usingnamespace @import("zigwin32").ui.input.keyboard_and_mouse;
     usingnamespace @import("zigwin32").graphics.gdi;
 };
+
+const DyXInputGetState = fn (
+    dwUserIndex: u32,
+    pState: ?*win32.XINPUT_STATE,
+) callconv(@import("std").os.windows.WINAPI) u32;
+fn XInputGetStateStub(
+    dwUserIndex: u32,
+    pState: ?*win32.XINPUT_STATE,
+) callconv(@import("std").os.windows.WINAPI) u32 {
+    _ = dwUserIndex;
+    _ = pState;
+    return 0;
+}
+var g_XInputGetState: *const DyXInputGetState = XInputGetStateStub;
+
+const DyXInputSetState = fn (
+    dwUserIndex: u32,
+    pVibration: ?*win32.XINPUT_VIBRATION,
+) callconv(@import("std").os.windows.WINAPI) u32;
+fn XInputSetStateStub(
+    dwUserIndex: u32,
+    pVibration: ?*win32.XINPUT_VIBRATION,
+) callconv(@import("std").os.windows.WINAPI) u32 {
+    _ = dwUserIndex;
+    _ = pVibration;
+    return 0;
+}
+var g_XInputSetState: *const DyXInputSetState = XInputSetStateStub;
+
+fn loadXInput() void {
+    const lib_name = "xinput1_4.dll";
+    if (win32.LoadLibraryA(lib_name)) |module| {
+        g_XInputGetState = @ptrCast(win32.GetProcAddress(module, "XInputGetState"));
+        g_XInputSetState = @ptrCast(win32.GetProcAddress(module, "XInputSetState"));
+    } else {
+        std.debug.print("Cannot load {s}\n", .{lib_name});
+    }
+}
 
 const WindowDimension = struct {
     width: i32,
@@ -129,6 +170,41 @@ fn wndProc(
         win32.WM_CLOSE => {
             g_running = false;
         },
+        win32.WM_SYSKEYDOWN,
+        win32.WM_SYSKEYUP,
+        win32.WM_KEYDOWN,
+        win32.WM_KEYUP,
+        => {
+            const vk_code: win32.VIRTUAL_KEY = @enumFromInt(wParam);
+            const was_down = (lParam & (1 << 30)) != 0;
+            const is_down = (lParam & (1 << 31)) == 0;
+            if (was_down != is_down) {
+                switch (vk_code) {
+                    win32.VK_W => {},
+                    win32.VK_A => {},
+                    win32.VK_S => {},
+                    win32.VK_D => {},
+                    win32.VK_Q => {},
+                    win32.VK_E => {},
+                    win32.VK_UP => {},
+                    win32.VK_DOWN => {},
+                    win32.VK_LEFT => {},
+                    win32.VK_RIGHT => {},
+                    win32.VK_ESCAPE => {},
+                    win32.VK_SPACE => {
+                        std.debug.print("SPACE: ", .{});
+                        if (is_down) {
+                            std.debug.print("is down ", .{});
+                        }
+                        if (was_down) {
+                            std.debug.print("was down ", .{});
+                        }
+                        std.debug.print("\n", .{});
+                    },
+                    else => {},
+                }
+            }
+        },
         win32.WM_PAINT => {
             var paint: win32.PAINTSTRUCT = undefined;
             const device_ctx = win32.BeginPaint(hWnd, &paint);
@@ -153,6 +229,8 @@ pub fn wWinMain(
     _ = hInstPrev;
     _ = cmdline;
     _ = cmdshow;
+
+    loadXInput();
 
     const win_class = win32.WNDCLASSA{
         .style = .{ .HREDRAW = 1, .VREDRAW = 1 },
@@ -200,13 +278,40 @@ pub fn wWinMain(
                     _ = win32.TranslateMessage(&msg);
                     _ = win32.DispatchMessageA(&msg);
                 }
+
+                for (0..win32.XUSER_MAX_COUNT) |i| {
+                    var controller_state: win32.XINPUT_STATE = undefined;
+
+                    const rc = g_XInputGetState(@intCast(i), &controller_state);
+                    if (@as(win32.WIN32_ERROR, @enumFromInt(rc)) == win32.ERROR_SUCCESS) {
+                        // The controller is plugged in
+                        // const up = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_DPAD_UP;
+                        // const down = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_DPAD_DOWN;
+                        // const left = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_DPAD_LEFT;
+                        // const right = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_DPAD_RIGHT;
+                        // const start = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_START;
+                        // const back = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_BACK;
+                        // const left_shoulder = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_LEFT_SHOULDER;
+                        // const right_shoulder = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_RIGHT_SHOULDER;
+                        // const a_btn = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_A;
+                        // const b_btn = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_B;
+                        // const x_btn = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_X;
+                        // const y_btn = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_Y;
+                        //
+                        // const stick_x = controller_state.Gamepad.sThumbLX;
+                        // const stick_y = controller_state.Gamepad.sThumbLY;
+                    } else {
+                        // The controller is not available
+                    }
+                }
+
                 renderWeirdGradient(&g_backbuffer, x_offset, y_offset);
                 const device_ctx = win32.GetDC(win_handle);
                 const dimension = WindowDimension.from(win_handle);
                 updateWindow(device_ctx, &g_backbuffer, dimension.width, dimension.height);
                 _ = win32.ReleaseDC(win_handle, device_ctx);
                 x_offset +%= 1;
-                y_offset +%= 1;
+                y_offset +%= 2;
             }
         } else {
             // TODO log
