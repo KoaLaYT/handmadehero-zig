@@ -8,18 +8,78 @@ const win32 = struct {
     usingnamespace @import("zigwin32").graphics.gdi;
 };
 
-var g_running = false;
-var g_bitmap_info: win32.BITMAPINFO = undefined;
-var g_bitmap_memory: ?*anyopaque = null;
-var g_bitmap_width: i32 = undefined;
-var g_bitmap_height: i32 = undefined;
+const WindowDimension = struct {
+    width: i32,
+    height: i32,
 
-fn renderWeirdGradient(x_offset: usize, y_offset: usize) void {
-    var mem: [*]u8 = @ptrCast(g_bitmap_memory);
-    const pitch: usize = @intCast(g_bitmap_width * 4);
-    for (0..@intCast(g_bitmap_height)) |y| {
+    const Self = @This();
+
+    fn from(hWnd: ?win32.HWND) Self {
+        var client_rect: win32.RECT = undefined;
+        _ = win32.GetClientRect(hWnd, &client_rect);
+        const width = client_rect.right - client_rect.left;
+        const height = client_rect.bottom - client_rect.top;
+        return .{ .width = width, .height = height };
+    }
+};
+
+const OffscreenBuffer = struct {
+    info: win32.BITMAPINFO,
+    memory: ?*anyopaque,
+    width: i32,
+    height: i32,
+    bytes_per_pixel: i32,
+
+    const Self = @This();
+
+    fn init(width: i32, height: i32) Self {
+        var buffer: OffscreenBuffer = undefined;
+
+        // if (self.memory != null) {
+        //     _ = win32.VirtualFree(self.memory, 0, win32.MEM_RELEASE);
+        // }
+
+        buffer.width = width;
+        buffer.height = height;
+        buffer.bytes_per_pixel = 4;
+        buffer.info = .{
+            .bmiHeader = .{
+                .biSize = @sizeOf(win32.BITMAPINFOHEADER),
+                .biWidth = buffer.width,
+                .biHeight = -buffer.height,
+                .biPlanes = 1,
+                .biBitCount = 32,
+                .biCompression = win32.BI_RGB,
+                .biSizeImage = 0,
+                .biXPelsPerMeter = 0,
+                .biYPelsPerMeter = 0,
+                .biClrUsed = 0,
+                .biClrImportant = 0,
+            },
+            .bmiColors = std.mem.zeroes([1]win32.RGBQUAD),
+        };
+
+        const bitmap_memory_size: usize = @intCast(buffer.width * buffer.height * buffer.bytes_per_pixel);
+        buffer.memory = win32.VirtualAlloc(
+            null,
+            bitmap_memory_size,
+            win32.MEM_COMMIT,
+            win32.PAGE_READWRITE,
+        );
+
+        return buffer;
+    }
+};
+
+var g_running = false;
+var g_backbuffer: OffscreenBuffer = undefined;
+
+fn renderWeirdGradient(buffer: *const OffscreenBuffer, x_offset: usize, y_offset: usize) void {
+    var mem: [*]u8 = @ptrCast(buffer.memory);
+    const pitch: usize = @intCast(buffer.width * buffer.bytes_per_pixel);
+    for (0..@intCast(buffer.height)) |y| {
         var pixel: [*]u32 = @alignCast(@ptrCast(mem));
-        for (0..@intCast(g_bitmap_width)) |x| {
+        for (0..@intCast(buffer.width)) |x| {
             const blue: u8 = @truncate(x + x_offset); // BB
             const green: u8 = @truncate(y + y_offset); // GG
             const red: u8 = 0; // RR
@@ -30,55 +90,24 @@ fn renderWeirdGradient(x_offset: usize, y_offset: usize) void {
     }
 }
 
-fn resizeDIBSection(width: i32, height: i32) void {
-    if (g_bitmap_memory != null) {
-        _ = win32.VirtualFree(g_bitmap_memory, 0, win32.MEM_RELEASE);
-    }
-
-    g_bitmap_width = width;
-    g_bitmap_height = height;
-
-    g_bitmap_info = .{
-        .bmiHeader = .{
-            .biSize = @sizeOf(win32.BITMAPINFOHEADER),
-            .biWidth = g_bitmap_width,
-            .biHeight = -g_bitmap_height,
-            .biPlanes = 1,
-            .biBitCount = 32,
-            .biCompression = win32.BI_RGB,
-            .biSizeImage = 0,
-            .biXPelsPerMeter = 0,
-            .biYPelsPerMeter = 0,
-            .biClrUsed = 0,
-            .biClrImportant = 0,
-        },
-        .bmiColors = std.mem.zeroes([1]win32.RGBQUAD),
-    };
-
-    const bitmap_memory_size: usize = @intCast(g_bitmap_width * g_bitmap_height * 4);
-    g_bitmap_memory = win32.VirtualAlloc(
-        null,
-        bitmap_memory_size,
-        win32.MEM_COMMIT,
-        win32.PAGE_READWRITE,
-    );
-}
-
-fn updateWindow(device_ctx: ?win32.HDC, window_rect: *const win32.RECT) void {
-    const window_width = window_rect.right - window_rect.left;
-    const window_height = window_rect.bottom - window_rect.top;
+fn updateWindow(
+    device_ctx: ?win32.HDC,
+    buffer: *const OffscreenBuffer,
+    width: i32,
+    height: i32,
+) void {
     _ = win32.StretchDIBits(
         device_ctx,
         0,
         0,
-        g_bitmap_width,
-        g_bitmap_height,
+        width,
+        height,
         0,
         0,
-        window_width,
-        window_height,
-        g_bitmap_memory,
-        &g_bitmap_info,
+        buffer.width,
+        buffer.height,
+        buffer.memory,
+        &buffer.info,
         win32.DIB_RGB_COLORS,
         win32.SRCCOPY,
     );
@@ -93,13 +122,7 @@ fn wndProc(
     var result: win32.LRESULT = 0;
 
     switch (uMsg) {
-        win32.WM_SIZE => {
-            var client_rect: win32.RECT = undefined;
-            _ = win32.GetClientRect(hWnd, &client_rect);
-            const width = client_rect.right - client_rect.left;
-            const height = client_rect.bottom - client_rect.top;
-            resizeDIBSection(width, height);
-        },
+        win32.WM_SIZE => {},
         win32.WM_DESTROY => {
             g_running = false;
         },
@@ -108,10 +131,9 @@ fn wndProc(
         },
         win32.WM_PAINT => {
             var paint: win32.PAINTSTRUCT = undefined;
-            _ = win32.BeginPaint(hWnd, &paint);
-            // var client_rect: win32.RECT = undefined;
-            // _ = win32.GetClientRect(hWnd, &client_rect);
-            // updateWindow(device_ctx, &client_rect);
+            const device_ctx = win32.BeginPaint(hWnd, &paint);
+            const window_dimension = WindowDimension.from(hWnd);
+            updateWindow(device_ctx, &g_backbuffer, window_dimension.width, window_dimension.height);
             _ = win32.EndPaint(hWnd, &paint);
         },
         else => {
@@ -133,7 +155,7 @@ pub fn wWinMain(
     _ = cmdshow;
 
     const win_class = win32.WNDCLASSA{
-        .style = .{ .OWNDC = 1, .HREDRAW = 1, .VREDRAW = 1 },
+        .style = .{ .HREDRAW = 1, .VREDRAW = 1 },
         .lpfnWndProc = wndProc,
         .cbClsExtra = 0,
         .cbWndExtra = 0,
@@ -144,6 +166,8 @@ pub fn wWinMain(
         .lpszMenuName = null,
         .lpszClassName = "HandmadeHeroWindowClass",
     };
+
+    g_backbuffer = OffscreenBuffer.init(1280, 720);
 
     if (win32.RegisterClassA(&win_class) > 0) {
         var style = win32.WS_OVERLAPPEDWINDOW;
@@ -176,11 +200,10 @@ pub fn wWinMain(
                     _ = win32.TranslateMessage(&msg);
                     _ = win32.DispatchMessageA(&msg);
                 }
-                renderWeirdGradient(x_offset, y_offset);
+                renderWeirdGradient(&g_backbuffer, x_offset, y_offset);
                 const device_ctx = win32.GetDC(win_handle);
-                var client_rect: win32.RECT = undefined;
-                _ = win32.GetClientRect(win_handle, &client_rect);
-                updateWindow(device_ctx, &client_rect);
+                const dimension = WindowDimension.from(win_handle);
+                updateWindow(device_ctx, &g_backbuffer, dimension.width, dimension.height);
                 _ = win32.ReleaseDC(win_handle, device_ctx);
                 x_offset +%= 1;
                 y_offset +%= 1;
