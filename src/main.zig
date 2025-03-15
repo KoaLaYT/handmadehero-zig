@@ -5,10 +5,13 @@ const win32 = struct {
     usingnamespace @import("zigwin32").system.system_services;
     usingnamespace @import("zigwin32").system.memory;
     usingnamespace @import("zigwin32").system.library_loader;
+    usingnamespace @import("zigwin32").system.com;
     usingnamespace @import("zigwin32").ui.windows_and_messaging;
     usingnamespace @import("zigwin32").ui.input.xbox_controller;
     usingnamespace @import("zigwin32").ui.input.keyboard_and_mouse;
     usingnamespace @import("zigwin32").graphics.gdi;
+    usingnamespace @import("zigwin32").media.audio.direct_sound;
+    usingnamespace @import("zigwin32").media.audio;
 };
 
 const DyXInputGetState = fn (
@@ -21,7 +24,7 @@ fn XInputGetStateStub(
 ) callconv(@import("std").os.windows.WINAPI) u32 {
     _ = dwUserIndex;
     _ = pState;
-    return 0;
+    return @intFromEnum(win32.ERROR_DEVICE_NOT_CONNECTED);
 }
 var g_XInputGetState: *const DyXInputGetState = XInputGetStateStub;
 
@@ -35,9 +38,15 @@ fn XInputSetStateStub(
 ) callconv(@import("std").os.windows.WINAPI) u32 {
     _ = dwUserIndex;
     _ = pVibration;
-    return 0;
+    return @intFromEnum(win32.ERROR_DEVICE_NOT_CONNECTED);
 }
 var g_XInputSetState: *const DyXInputSetState = XInputSetStateStub;
+
+const DyDirectSoundCreate = fn (
+    pcGuidDevice: ?*const win32.Guid,
+    ppDS: ?*?*win32.IDirectSound,
+    pUnkOuter: ?*win32.IUnknown,
+) callconv(@import("std").os.windows.WINAPI) win32.HRESULT;
 
 fn loadXInput() void {
     const lib_name = "xinput1_4.dll";
@@ -46,6 +55,60 @@ fn loadXInput() void {
         g_XInputSetState = @ptrCast(win32.GetProcAddress(module, "XInputSetState"));
     } else {
         std.debug.print("Cannot load {s}\n", .{lib_name});
+    }
+}
+
+fn initDSound(hWnd: ?win32.HWND, samples_per_sec: u32, buffer_size: u32) void {
+    if (win32.LoadLibraryA("dsound.dll")) |module| {
+        if (@as(?*const DyDirectSoundCreate, @ptrCast(win32.GetProcAddress(module, "DirectSoundCreate")))) |DirectSoundCreate| {
+            var direct_sound_opt: ?*win32.IDirectSound = undefined;
+            if (!win32.SUCCEEDED(DirectSoundCreate(null, &direct_sound_opt, null))) {
+                // TODO: diagnostic
+                return;
+            }
+            if (direct_sound_opt) |direct_sound| {
+                if (!win32.SUCCEEDED(direct_sound.SetCooperativeLevel(hWnd, win32.DSSCL_PRIORITY))) {
+                    // TODO: diagnostic
+                    return;
+                }
+                var primary_desc = std.mem.zeroes(win32.DSBUFFERDESC);
+                primary_desc.dwSize = @sizeOf(win32.DSBUFFERDESC);
+                primary_desc.dwFlags = win32.DSBCAPS_PRIMARYBUFFER;
+                var primary_buffer_opt: ?*win32.IDirectSoundBuffer = undefined;
+                if (!win32.SUCCEEDED(direct_sound.CreateSoundBuffer(&primary_desc, &primary_buffer_opt, null))) {
+                    // TODO: diagnostic
+                    return;
+                }
+                if (primary_buffer_opt) |primary_buffer| {
+                    var wave_format = std.mem.zeroes(win32.WAVEFORMATEX);
+                    wave_format.wFormatTag = win32.WAVE_FORMAT_PCM;
+                    wave_format.nChannels = 2;
+                    wave_format.nSamplesPerSec = samples_per_sec;
+                    wave_format.nAvgBytesPerSec = samples_per_sec * 4;
+                    wave_format.nBlockAlign = 4;
+                    wave_format.wBitsPerSample = 16;
+                    wave_format.cbSize = 0;
+                    if (!win32.SUCCEEDED(primary_buffer.SetFormat(&wave_format))) {
+                        // TODO: diagnostic
+                        return;
+                    }
+                    var secondary_desc = std.mem.zeroes(win32.DSBUFFERDESC);
+                    secondary_desc.dwSize = @sizeOf(win32.DSBUFFERDESC);
+                    // secondary_desc.dwFlags = 0;
+                    secondary_desc.dwBufferBytes = buffer_size;
+                    secondary_desc.lpwfxFormat = &wave_format;
+                    var secondary_buffer_opt: ?*win32.IDirectSoundBuffer = undefined;
+                    if (!win32.SUCCEEDED(direct_sound.CreateSoundBuffer(&secondary_desc, &secondary_buffer_opt, null))) {
+                        // TODO: diagnostic
+                        return;
+                    }
+                    if (secondary_buffer_opt) |secondary_buffer| {
+                        std.debug.print("{?}\n", .{direct_sound});
+                        _ = secondary_buffer;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -265,6 +328,7 @@ pub fn wWinMain(
             hInst,
             null,
         )) |win_handle| {
+            initDSound(win_handle, 48000, 48000 * @sizeOf(i16) * 2);
             g_running = true;
             var x_offset: usize = 0;
             var y_offset: usize = 0;
