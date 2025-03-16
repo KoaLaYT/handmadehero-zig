@@ -15,6 +15,7 @@ const win32 = struct {
     usingnamespace @import("zigwin32").media.audio;
 };
 const util = @import("util.zig");
+const game = @import("handmade.zig");
 
 const DyXInputGetState = fn (
     dwUserIndex: u32,
@@ -175,22 +176,6 @@ const OffscreenBuffer = struct {
 var g_running = false;
 var g_backbuffer: OffscreenBuffer = undefined;
 var g_secondary_buffer: ?*win32.IDirectSoundBuffer = undefined;
-
-fn renderWeirdGradient(buffer: *const OffscreenBuffer, x_offset: usize, y_offset: usize) void {
-    var mem: [*]u8 = @ptrCast(buffer.memory);
-    const pitch: usize = @intCast(buffer.width * buffer.bytes_per_pixel);
-    for (0..@intCast(buffer.height)) |y| {
-        var pixel: [*]u32 = @alignCast(@ptrCast(mem));
-        for (0..@intCast(buffer.width)) |x| {
-            const blue: u8 = @truncate(x + x_offset); // BB
-            const green: u8 = @truncate(y + y_offset); // GG
-            const red: u8 = 0; // RR
-            pixel[0] = @bitCast([4]u8{ blue, green, red, 0 });
-            pixel += 1;
-        }
-        mem += pitch;
-    }
-}
 
 fn updateWindow(
     device_ctx: ?win32.HDC,
@@ -455,7 +440,15 @@ pub fn wWinMain(
                     }
                 }
 
-                renderWeirdGradient(&g_backbuffer, x_offset, y_offset);
+                const buffer = game.OffscreenBuffer{
+                    .memory = g_backbuffer.memory,
+                    .width = g_backbuffer.width,
+                    .height = g_backbuffer.height,
+                    .bytes_per_pixel = g_backbuffer.bytes_per_pixel,
+                };
+                game.updateAndRender(&buffer, x_offset, y_offset);
+                x_offset +%= 1;
+                y_offset +%= 2;
 
                 // DirectSound output test
                 var play_cursor: u32 = undefined;
@@ -488,8 +481,6 @@ pub fn wWinMain(
                 const dimension = WindowDimension.from(win_handle);
                 updateWindow(device_ctx, &g_backbuffer, dimension.width, dimension.height);
                 _ = win32.ReleaseDC(win_handle, device_ctx);
-                x_offset +%= 1;
-                y_offset +%= 2;
 
                 const end_cycle_counter = util.clockCycles();
                 var end_counter: win32.LARGE_INTEGER = undefined;

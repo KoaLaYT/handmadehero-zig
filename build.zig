@@ -10,24 +10,24 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    const root_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+    const win_root_module = b.createModule(.{
+        .root_source_file = b.path("src/win_main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const zigwin32_dep = b.dependency("zigwin32", .{});
-    root_module.addImport("zigwin32", zigwin32_dep.module("win32"));
+    win_root_module.addImport("zigwin32", zigwin32_dep.module("win32"));
 
-    const exe = b.addExecutable(.{
+    const win_exe = b.addExecutable(.{
         .name = "handmadehero-zig",
-        .root_module = root_module,
+        .root_module = win_root_module,
     });
 
-    b.installArtifact(exe);
+    b.installArtifact(win_exe);
 
     const wine_cmd = b.addSystemCommand(&.{"wine"});
-    wine_cmd.addArtifactArg(exe);
+    wine_cmd.addArtifactArg(win_exe);
     wine_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         wine_cmd.addArgs(args);
@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
     wine_step.dependOn(&wine_cmd.step);
 
     const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/win_main.zig"),
         .target = target,
         .optimize = optimize,
     });
