@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const OffscreenBuffer = struct {
     memory: ?*anyopaque,
     width: i32,
@@ -5,7 +7,18 @@ pub const OffscreenBuffer = struct {
     bytes_per_pixel: i32,
 };
 
-pub fn updateAndRender(buffer: *const OffscreenBuffer, x_offset: usize, y_offset: usize) void {
+pub const SoundOutputBuffer = struct {
+    samples: []i16,
+    samples_per_sec: u32,
+};
+
+pub fn updateAndRender(
+    buffer: *const OffscreenBuffer,
+    x_offset: usize,
+    y_offset: usize,
+    sound_buffer: *SoundOutputBuffer,
+) void {
+    outputSound(sound_buffer);
     renderWeirdGradient(buffer, x_offset, y_offset);
 }
 
@@ -22,5 +35,23 @@ fn renderWeirdGradient(buffer: *const OffscreenBuffer, x_offset: usize, y_offset
             pixel += 1;
         }
         mem += pitch;
+    }
+}
+
+fn outputSound(buffer: *SoundOutputBuffer) void {
+    const S = struct {
+        var t_sine: f32 = 0;
+    };
+    const tone_volume: f32 = 3000;
+    const tone_hz = 256;
+    const wave_period: f32 = @floatFromInt(buffer.samples_per_sec / tone_hz);
+
+    std.debug.assert(buffer.samples.len % 2 == 0);
+    for (0..buffer.samples.len / 2) |i| {
+        const sine_value = @sin(S.t_sine);
+        const sample_value: i16 = @intFromFloat(sine_value * tone_volume);
+        buffer.samples[2 * i] = sample_value;
+        buffer.samples[2 * i + 1] = sample_value;
+        S.t_sine += 2 * std.math.pi / wave_period;
     }
 }
