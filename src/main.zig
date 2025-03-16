@@ -279,6 +279,78 @@ fn wndProc(
     return result;
 }
 
+const SoundOutput = struct {
+    samples_per_sec: u32,
+    tone_hz: u32,
+    tone_volume: i16,
+    running_sample_index: u32,
+    wave_period: f32,
+    bytes_per_sample: u32,
+    secondary_buffer_size: u32,
+
+    const Self = @This();
+
+    fn init() Self {
+        const samples_per_sec = 48000;
+        const tone_hz = 256;
+        const bytes_per_sample = @sizeOf(i16) * 2;
+        return .{
+            .samples_per_sec = samples_per_sec,
+            .tone_hz = tone_hz,
+            .tone_volume = 3000,
+            .running_sample_index = 0,
+            .wave_period = @floatFromInt(samples_per_sec / tone_hz),
+            .bytes_per_sample = bytes_per_sample,
+            .secondary_buffer_size = samples_per_sec * bytes_per_sample,
+        };
+    }
+
+    fn bytesToLock(self: *const Self) u32 {
+        return (self.running_sample_index * self.bytes_per_sample) % self.secondary_buffer_size;
+    }
+
+    fn fillBuffer(self: *Self, bytes_to_lock: u32, bytes_to_write: u32) void {
+        var region1: ?*anyopaque = undefined;
+        var region1_size: u32 = undefined;
+        var region2: ?*anyopaque = undefined;
+        var region2_size: u32 = undefined;
+
+        if (win32.SUCCEEDED(g_secondary_buffer.?.Lock(
+            bytes_to_lock,
+            bytes_to_write,
+            &region1,
+            &region1_size,
+            &region2,
+            &region2_size,
+            0,
+        ))) {
+            var sample_out: [*]i16 = @alignCast(@ptrCast(region1));
+            for (0..@intCast(region1_size / self.bytes_per_sample)) |_| {
+                const t: f32 = 2 * std.math.pi * (@as(f32, @floatFromInt(self.running_sample_index)) / self.wave_period);
+                const sine_value = @sin(t);
+                const sample_value: i16 = @intFromFloat(sine_value * @as(f32, @floatFromInt(self.tone_volume)));
+                sample_out[0] = sample_value;
+                sample_out[1] = sample_value;
+                sample_out += 2;
+                self.running_sample_index +%= 1;
+            }
+            if (region2_size > 0) {
+                sample_out = @alignCast(@ptrCast(region2));
+                for (0..@intCast(region2_size / self.bytes_per_sample)) |_| {
+                    const t: f32 = 2 * std.math.pi * (@as(f32, @floatFromInt(self.running_sample_index)) / self.wave_period);
+                    const sine_value = @sin(t);
+                    const sample_value: i16 = @intFromFloat(sine_value * @as(f32, @floatFromInt(self.tone_volume)));
+                    sample_out[0] = sample_value;
+                    sample_out[1] = sample_value;
+                    sample_out += 2;
+                    self.running_sample_index +%= 1;
+                }
+            }
+            _ = g_secondary_buffer.?.Unlock(region1, region1_size, region2, region2_size);
+        }
+    }
+};
+
 pub fn wWinMain(
     hInst: win32.HINSTANCE,
     hInstPrev: ?win32.HINSTANCE,
@@ -324,24 +396,19 @@ pub fn wWinMain(
             hInst,
             null,
         )) |win_handle| {
-            g_running = true;
             var x_offset: usize = 0;
             var y_offset: usize = 0;
 
-            const samples_per_sec = 48000;
-            const tone_hz = 256;
-            const tone_volume: i16 = 1000;
-            var running_sample_index: u32 = 0;
-            const square_wave_period: i32 = samples_per_sec / tone_hz;
-            const half_square_wave_period: i32 = square_wave_period / 2;
-            const bytes_per_sample = @sizeOf(i16) * 2;
-            const secondary_buffer_size = samples_per_sec * bytes_per_sample;
+            var sound_output = SoundOutput.init();
 
-            initDSound(win_handle, samples_per_sec, secondary_buffer_size);
-            if (!win32.SUCCEEDED(g_secondary_buffer.?.Play(0, 0, win32.DSBPLAY_LOOPING))) {
-                @panic("g_secondary_buffer Play failed");
-            }
+            initDSound(
+                win_handle,
+                sound_output.samples_per_sec,
+                sound_output.secondary_buffer_size,
+            );
+            var sound_is_playing = false;
 
+            g_running = true;
             while (g_running) {
                 var msg: win32.MSG = undefined;
                 while (win32.PeekMessageA(&msg, null, 0, 0, win32.PM_REMOVE) > 0) {
@@ -384,56 +451,29 @@ pub fn wWinMain(
                 // DirectSound output test
                 var play_cursor: u32 = undefined;
                 var write_cursor: u32 = undefined;
-                if (!win32.SUCCEEDED(g_secondary_buffer.?.GetCurrentPosition(&play_cursor, &write_cursor))) {
-                    @panic("g_secondary_buffer GetCurrentPosition failed");
-                }
-                const bytes_to_lock = running_sample_index * bytes_per_sample % secondary_buffer_size;
-                var bytes_to_write: u32 = undefined;
-                if (bytes_to_lock == play_cursor) {
-                    bytes_to_write = secondary_buffer_size;
-                } else if (bytes_to_lock > play_cursor) {
-                    bytes_to_write = secondary_buffer_size - bytes_to_lock;
-                    bytes_to_write += play_cursor;
-                } else {
-                    bytes_to_write = play_cursor - bytes_to_lock;
-                }
+                if (win32.SUCCEEDED(g_secondary_buffer.?.GetCurrentPosition(&play_cursor, &write_cursor))) {
+                    const bytes_to_lock = sound_output.bytesToLock();
+                    var bytes_to_write: u32 = 0;
+                    if (bytes_to_lock == play_cursor) {
+                        if (!sound_is_playing) {
+                            bytes_to_write = sound_output.secondary_buffer_size;
+                        }
+                    } else if (bytes_to_lock > play_cursor) {
+                        bytes_to_write = sound_output.secondary_buffer_size - bytes_to_lock;
+                        bytes_to_write += play_cursor;
+                    } else {
+                        bytes_to_write = play_cursor - bytes_to_lock;
+                    }
 
-                var region1: ?*anyopaque = undefined;
-                var region1_size: u32 = undefined;
-                var region2: ?*anyopaque = undefined;
-                var region2_size: u32 = undefined;
+                    sound_output.fillBuffer(bytes_to_lock, bytes_to_write);
 
-                if (!win32.SUCCEEDED(g_secondary_buffer.?.Lock(
-                    bytes_to_lock,
-                    bytes_to_write,
-                    &region1,
-                    &region1_size,
-                    &region2,
-                    &region2_size,
-                    0,
-                ))) {
-                    @panic("g_secondary_buffer Lock failed\n");
-                }
-
-                var sample_out: [*]i16 = @alignCast(@ptrCast(region1));
-                for (0..@intCast(region1_size / bytes_per_sample)) |_| {
-                    const sample_value = if (@divTrunc(running_sample_index, half_square_wave_period) % 2 == 1) tone_volume else -tone_volume;
-                    sample_out[0] = sample_value;
-                    sample_out[1] = sample_value;
-                    sample_out += 2;
-                    running_sample_index +%= 1;
-                }
-                if (region2_size > 0) {
-                    sample_out = @alignCast(@ptrCast(region2));
-                    for (0..@intCast(region2_size / bytes_per_sample)) |_| {
-                        const sample_value = if (@divTrunc(running_sample_index, half_square_wave_period) % 2 == 1) tone_volume else -tone_volume;
-                        sample_out[0] = sample_value;
-                        sample_out[1] = sample_value;
-                        sample_out += 2;
-                        running_sample_index +%= 1;
+                    if (!sound_is_playing) {
+                        if (!win32.SUCCEEDED(g_secondary_buffer.?.Play(0, 0, win32.DSBPLAY_LOOPING))) {
+                            @panic("g_secondary_buffer Play failed");
+                        }
+                        sound_is_playing = true;
                     }
                 }
-                _ = g_secondary_buffer.?.Unlock(region1, region1_size, region2, region2_size);
 
                 const device_ctx = win32.GetDC(win_handle);
                 const dimension = WindowDimension.from(win_handle);
