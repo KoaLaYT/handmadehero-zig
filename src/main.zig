@@ -6,6 +6,7 @@ const win32 = struct {
     usingnamespace @import("zigwin32").system.memory;
     usingnamespace @import("zigwin32").system.library_loader;
     usingnamespace @import("zigwin32").system.com;
+    usingnamespace @import("zigwin32").system.performance;
     usingnamespace @import("zigwin32").ui.windows_and_messaging;
     usingnamespace @import("zigwin32").ui.input.xbox_controller;
     usingnamespace @import("zigwin32").ui.input.keyboard_and_mouse;
@@ -13,6 +14,7 @@ const win32 = struct {
     usingnamespace @import("zigwin32").media.audio.direct_sound;
     usingnamespace @import("zigwin32").media.audio;
 };
+const util = @import("util.zig");
 
 const DyXInputGetState = fn (
     dwUserIndex: u32,
@@ -408,6 +410,13 @@ pub fn wWinMain(
             );
             var sound_is_playing = false;
 
+            var perf_counter_frequency_result: win32.LARGE_INTEGER = undefined;
+            _ = win32.QueryPerformanceFrequency(&perf_counter_frequency_result);
+            const perf_counter_frequency: f32 = @floatFromInt(perf_counter_frequency_result.QuadPart);
+            var last_counter: win32.LARGE_INTEGER = undefined;
+            _ = win32.QueryPerformanceCounter(&last_counter);
+            var last_cycle_counter = util.clockCycles();
+
             g_running = true;
             while (g_running) {
                 var msg: win32.MSG = undefined;
@@ -481,6 +490,20 @@ pub fn wWinMain(
                 _ = win32.ReleaseDC(win_handle, device_ctx);
                 x_offset +%= 1;
                 y_offset +%= 2;
+
+                const end_cycle_counter = util.clockCycles();
+                var end_counter: win32.LARGE_INTEGER = undefined;
+                _ = win32.QueryPerformanceCounter(&end_counter);
+
+                const counter_elapsed: f32 = @floatFromInt(end_counter.QuadPart - last_counter.QuadPart);
+                const ms_elapsed = 1000 * counter_elapsed / perf_counter_frequency;
+                const fps = perf_counter_frequency / counter_elapsed;
+                const mcpf = @as(f32, @floatFromInt(end_cycle_counter - last_cycle_counter)) / 1e6;
+
+                std.debug.print("{d:.3}ms/f - {d:.0}f/s - {d:.2}mc/f\n", .{ ms_elapsed, fps, mcpf });
+
+                last_counter = end_counter;
+                last_cycle_counter = end_cycle_counter;
             }
         } else {
             // TODO log
