@@ -384,6 +384,16 @@ const SoundOutput = struct {
     }
 };
 
+fn processXInputDigitalButton(
+    button_state: u16,
+    button_bit: u32,
+    old_state: *game.ButtonState,
+    new_state: *game.ButtonState,
+) void {
+    new_state.ended_down = (button_state & button_bit) == button_bit;
+    new_state.half_transition_count = if (old_state.ended_down != new_state.ended_down) 1 else 0;
+}
+
 pub fn wWinMain(
     hInst: win32.HINSTANCE,
     hInstPrev: ?win32.HINSTANCE,
@@ -429,9 +439,6 @@ pub fn wWinMain(
             hInst,
             null,
         )) |win_handle| {
-            var x_offset: usize = 0;
-            var y_offset: usize = 0;
-
             var sound_output = SoundOutput.init(win_handle);
             sound_output.clear();
             if (!win32.SUCCEEDED(g_secondary_buffer.?.Play(0, 0, win32.DSBPLAY_LOOPING))) {
@@ -444,6 +451,10 @@ pub fn wWinMain(
             var last_counter: win32.LARGE_INTEGER = undefined;
             _ = win32.QueryPerformanceCounter(&last_counter);
             var last_cycle_counter = util.clockCycles();
+
+            var inputs = std.mem.zeroes([2]game.Input);
+            var old_input = &inputs[0];
+            var new_input = &inputs[1];
 
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer _ = arena.deinit();
@@ -463,27 +474,50 @@ pub fn wWinMain(
                     _ = win32.DispatchMessageA(&msg);
                 }
 
-                for (0..win32.XUSER_MAX_COUNT) |i| {
+                for (0..@min(new_input.controllers.len, win32.XUSER_MAX_COUNT)) |i| {
                     var controller_state: win32.XINPUT_STATE = undefined;
 
                     const rc = g_XInputGetState(@intCast(i), &controller_state);
                     if (@as(win32.WIN32_ERROR, @enumFromInt(rc)) == win32.ERROR_SUCCESS) {
                         // The controller is plugged in
+                        const stick_x = if (controller_state.Gamepad.sThumbLX < 0)
+                            @as(f32, @floatFromInt(controller_state.Gamepad.sThumbLX)) / 32768.0
+                        else
+                            @as(f32, @floatFromInt(controller_state.Gamepad.sThumbLX)) / 32767.0;
+                        const stick_y = if (controller_state.Gamepad.sThumbLY < 0)
+                            @as(f32, @floatFromInt(controller_state.Gamepad.sThumbLY)) / 32768.0
+                        else
+                            @as(f32, @floatFromInt(controller_state.Gamepad.sThumbLY)) / 32767.0;
+
+                        var old_controller = &old_input.controllers[i];
+                        var new_controller = &new_input.controllers[i];
+
+                        const button_state = controller_state.Gamepad.wButtons;
+                        processXInputDigitalButton(button_state, win32.XINPUT_GAMEPAD_A, &old_controller.down, &new_controller.down);
+                        processXInputDigitalButton(button_state, win32.XINPUT_GAMEPAD_B, &old_controller.right, &new_controller.right);
+                        processXInputDigitalButton(button_state, win32.XINPUT_GAMEPAD_X, &old_controller.left, &new_controller.left);
+                        processXInputDigitalButton(button_state, win32.XINPUT_GAMEPAD_Y, &old_controller.up, &new_controller.up);
+                        processXInputDigitalButton(button_state, win32.XINPUT_GAMEPAD_LEFT_SHOULDER, &old_controller.left_shoulder, &new_controller.left_shoulder);
+                        processXInputDigitalButton(button_state, win32.XINPUT_GAMEPAD_RIGHT_SHOULDER, &old_controller.right_shoulder, &new_controller.right_shoulder);
+
+                        new_controller.is_analog = true;
+                        new_controller.start_x = old_controller.end_x;
+                        new_controller.start_y = old_controller.end_y;
+
+                        new_controller.min_x = stick_x;
+                        new_controller.max_x = stick_x;
+                        new_controller.end_x = stick_x;
+
+                        new_controller.min_y = stick_y;
+                        new_controller.max_y = stick_y;
+                        new_controller.end_y = stick_y;
+
                         // const up = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_DPAD_UP;
                         // const down = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_DPAD_DOWN;
                         // const left = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_DPAD_LEFT;
                         // const right = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_DPAD_RIGHT;
                         // const start = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_START;
                         // const back = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_BACK;
-                        // const left_shoulder = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_LEFT_SHOULDER;
-                        // const right_shoulder = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_RIGHT_SHOULDER;
-                        // const a_btn = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_A;
-                        // const b_btn = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_B;
-                        // const x_btn = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_X;
-                        // const y_btn = controller_state.Gamepad.wButtons & win32.XINPUT_GAMEPAD_Y;
-                        //
-                        // const stick_x = controller_state.Gamepad.sThumbLX;
-                        // const stick_y = controller_state.Gamepad.sThumbLY;
                     } else {
                         // The controller is not available
                     }
@@ -518,9 +552,7 @@ pub fn wWinMain(
                     .height = g_backbuffer.height,
                     .bytes_per_pixel = g_backbuffer.bytes_per_pixel,
                 };
-                game.updateAndRender(&buffer, x_offset, y_offset, &sound_buffer);
-                x_offset +%= 1;
-                y_offset +%= 2;
+                game.updateAndRender(new_input, &buffer, &sound_buffer);
 
                 if (sound_is_valid) {
                     sound_output.fillBuffer(bytes_to_lock, bytes_to_write, &sound_buffer);
@@ -544,6 +576,8 @@ pub fn wWinMain(
 
                 last_counter = end_counter;
                 last_cycle_counter = end_cycle_counter;
+
+                std.mem.swap(game.Input, old_input, new_input);
             }
         } else {
             // TODO log

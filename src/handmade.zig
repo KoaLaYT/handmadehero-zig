@@ -1,5 +1,37 @@
 const std = @import("std");
 
+pub const ButtonState = struct {
+    half_transition_count: u32,
+    ended_down: bool,
+};
+
+pub const ControllerInput = struct {
+    is_analog: bool,
+
+    start_x: f32,
+    start_y: f32,
+
+    min_x: f32,
+    min_y: f32,
+
+    max_x: f32,
+    max_y: f32,
+
+    end_x: f32,
+    end_y: f32,
+
+    up: ButtonState,
+    down: ButtonState,
+    left: ButtonState,
+    right: ButtonState,
+    left_shoulder: ButtonState,
+    right_shoulder: ButtonState,
+};
+
+pub const Input = struct {
+    controllers: [4]ControllerInput,
+};
+
 pub const OffscreenBuffer = struct {
     memory: ?*anyopaque,
     width: i32,
@@ -13,13 +45,21 @@ pub const SoundOutputBuffer = struct {
 };
 
 pub fn updateAndRender(
+    input: *const Input,
     buffer: *const OffscreenBuffer,
-    x_offset: usize,
-    y_offset: usize,
     sound_buffer: *SoundOutputBuffer,
 ) void {
+    _ = input;
+
+    const S = struct {
+        var x_offset: usize = 0;
+        var y_offset: usize = 0;
+    };
+    S.x_offset +%= 1;
+    S.y_offset +%= 2;
+
     outputSound(sound_buffer);
-    renderWeirdGradient(buffer, x_offset, y_offset);
+    renderWeirdGradient(buffer, S.x_offset, S.y_offset);
 }
 
 fn renderWeirdGradient(buffer: *const OffscreenBuffer, x_offset: usize, y_offset: usize) void {
